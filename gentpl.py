@@ -34,13 +34,19 @@ GRUB_PLATFORMS = [ "emu", "i386_pc", "i386_efi", "i386_qemu", "i386_coreboot",
                    "mips_qemu_mips", "arm_uboot", "arm_efi", "arm64_efi",
                    "arm_coreboot", "riscv32_efi", "riscv64_efi" ]
 
-GROUPS = {}
+GROUPS = {
+    "common": GRUB_PLATFORMS[:],
+    "i386": [
+        "i386_pc",
+        "i386_efi",
+        "i386_qemu",
+        "i386_coreboot",
+        "i386_multiboot",
+        "i386_ieee1275",
+    ],
+    "x86_64": ["x86_64_efi"],
+}
 
-GROUPS["common"]   = GRUB_PLATFORMS[:]
-
-# Groups based on CPU
-GROUPS["i386"]     = [ "i386_pc", "i386_efi", "i386_qemu", "i386_coreboot", "i386_multiboot", "i386_ieee1275" ]
-GROUPS["x86_64"]   = [ "x86_64_efi" ]
 GROUPS["x86"]      = GROUPS["i386"] + GROUPS["x86_64"]
 GROUPS["mips"]     = [ "mips_loongson", "mips_qemu_mips", "mips_arc" ]
 GROUPS["sparc64"]  = [ "sparc64_ieee1275" ]
@@ -60,12 +66,14 @@ GROUPS["xen"]  = [ "i386_xen", "x86_64_xen" ]
 GROUPS["coreboot"]  = [ "i386_coreboot", "arm_coreboot" ]
 
 # emu is a special case so many core functionality isn't needed on this platform
-GROUPS["noemu"]   = GRUB_PLATFORMS[:]; GROUPS["noemu"].remove("emu")
+GROUPS["noemu"]   = GRUB_PLATFORMS[:]
+GROUPS["noemu"].remove("emu")
 
 # Groups based on hardware features
 GROUPS["cmos"] = GROUPS["x86"][:] + ["mips_loongson", "mips_qemu_mips",
                                      "sparc64_ieee1275", "powerpc_ieee1275"]
-GROUPS["cmos"].remove("i386_efi"); GROUPS["cmos"].remove("x86_64_efi");
+GROUPS["cmos"].remove("i386_efi")
+GROUPS["cmos"].remove("x86_64_efi");
 GROUPS["pci"]      = GROUPS["x86"] + ["mips_loongson"]
 GROUPS["usb"]      = GROUPS["pci"] + ["arm_coreboot"]
 
@@ -90,7 +98,8 @@ for i in GROUPS["softdiv"]: GROUPS["no_softdiv"].remove(i)
 
 # Miscellaneous groups scheduled to disappear in future
 GROUPS["i386_coreboot_multiboot_qemu"] = ["i386_coreboot", "i386_multiboot", "i386_qemu"]
-GROUPS["nopc"] = GRUB_PLATFORMS[:]; GROUPS["nopc"].remove("i386_pc")
+GROUPS["nopc"] = GRUB_PLATFORMS[:]
+GROUPS["nopc"].remove("i386_pc")
 
 #
 # Create platform => groups reverse map, where groups covering that
@@ -101,8 +110,7 @@ for platform in GRUB_PLATFORMS:
     # initialize with platform itself as a group
     RMAP[platform] = [ platform ]
 
-    for k in GROUPS.keys():
-        v = GROUPS[k]
+    for k, v in GROUPS.items():
         # skip groups that don't cover this platform
         if platform not in v: continue
 
@@ -115,17 +123,6 @@ for platform in GRUB_PLATFORMS:
             else: bigger.append(group)
         # insert in the middle
         RMAP[platform] = smaller + [ k ] + bigger
-
-#
-# Input
-#
-
-# We support a subset of the AutoGen definitions file syntax.  Specifically,
-# compound names are disallowed; some preprocessing directives are
-# disallowed (though #if/#endif are allowed; note that, like AutoGen, #if
-# skips everything to the next #endif regardless of the value of the
-# conditional); and shell-generated strings, Scheme-generated strings, and
-# here strings are disallowed.
 
 class AutogenToken:
     (autogen, definitions, eof, var_name, other_name, string, number,
@@ -156,10 +153,7 @@ class AutogenDefinition(list):
                     return value
 
     def __contains__(self, key):
-        for name, value in self:
-            if name == key:
-                return True
-        return False
+        return any(name == key for name, value in self)
 
     def get(self, key, default):
         for name, value in self:
@@ -225,7 +219,7 @@ class AutogenParser:
                     except ValueError:
                         self.error("#if without matching #endif")
                 else:
-                    self.error("Unhandled directive '#%s'" % name)
+                    self.error(f"Unhandled directive '#{name}'")
             elif c == "{":
                 yield AutogenToken.lbrace, c
                 offset += 1
@@ -261,10 +255,7 @@ class AutogenParser:
                             self.error("EOF in quoted string")
                         if data[offset] == "\n":
                             self.cur_line += 1
-                        # Proper escaping unimplemented; this can be filled
-                        # out if needed.
-                        s.append("\\")
-                        s.append(data[offset])
+                        s.extend(("\\", data[offset]))
                     elif data[offset] == c:
                         offset += 1
                         break
@@ -305,7 +296,6 @@ class AutogenParser:
                            self.is_unquotable_char(data[end_name])):
                         end_name += 1
                     yield AutogenToken.other_name, data[offset:end_name]
-                    offset = end_name
                 else:
                     s = data[offset:end_name]
                     if s.lower() == "autogen":
@@ -314,9 +304,9 @@ class AutogenParser:
                         yield AutogenToken.definitions, s
                     else:
                         yield AutogenToken.var_name, s
-                    offset = end_name
+                offset = end_name
             else:
-                self.error("Invalid input character '%s'" % c)
+                self.error(f"Invalid input character '{c}'")
         yield AutogenToken.eof, None
 
     def do_need_name_end(self, token):
@@ -421,9 +411,7 @@ class AutogenParser:
                 if handler is not None:
                     handler(token)
             else:
-                self.error(
-                    "Parse error in state %s: unexpected token '%s'" % (
-                        state, token))
+                self.error(f"Parse error in state {state}: unexpected token '{token}'")
             if state == AutogenState.done:
                 break
 
@@ -455,7 +443,7 @@ def write_output(section=''):
 #
 
 def gvar_add(var, value):
-    output(var + " += " + value + "\n")
+    output(f"{var} += {value}" + "\n")
 
 #
 # Per PROGRAM/SCRIPT variables 
@@ -472,10 +460,10 @@ def vars_init(defn, *var_list):
         seen_vars.add(name)
 
 def var_set(var, value):
-    output(var + "  = " + value + "\n")
+    output(f"{var}  = {value}" + "\n")
 
 def var_add(var, value):
-    output(var + " += " + value + "\n")
+    output(f"{var} += {value}" + "\n")
 
 #
 # Variable names and rules
@@ -528,9 +516,7 @@ def if_platform_tagged(defn, platform, tag, snippet_if, snippet_else=None):
 # };
 #
 def foreach_value(defn, tag, closure):
-    r = []
-    for value in defn.find_all(tag):
-        r.append(closure(value))
+    r = [closure(value) for value in defn.find_all(tag)]
     return ''.join(r)
 
 #
@@ -545,14 +531,11 @@ def foreach_value(defn, tag, closure):
 def foreach_platform_specific_value(defn, platform, suffix, nonetag, closure):
     r = []
     for group in RMAP[platform]:
-        values = list(defn.find_all(group + suffix))
-        if values:
-            for value in values:
-                r.append(closure(value))
+        if values := list(defn.find_all(group + suffix)):
+            r.extend(closure(value) for value in values)
             break
     else:
-        for value in defn.find_all(nonetag):
-            r.append(closure(value))
+        r.extend(closure(value) for value in defn.find_all(nonetag))
     return ''.join(r)
 
 #
@@ -567,8 +550,7 @@ def foreach_platform_specific_value(defn, platform, suffix, nonetag, closure):
 def foreach_platform_value(defn, platform, suffix, closure):
     r = []
     for group in RMAP[platform]:
-        for value in defn.find_all(group + suffix):
-            r.append(closure(value))
+        r.extend(closure(value) for value in defn.find_all(group + suffix))
     return ''.join(r)
 
 def platform_conditional(platform, closure):
@@ -626,19 +608,38 @@ def foreach_enabled_platform(defn, closure):
 #  };
 #
 def under_platform_specific_conditionals(defn, platform, closure):
-    output(foreach_platform_specific_value(defn, platform, "_condition", "condition", lambda cond: "if " + cond + "\n"))
+    output(
+        foreach_platform_specific_value(
+            defn,
+            platform,
+            "_condition",
+            "condition",
+            lambda cond: f"if {cond}" + "\n",
+        )
+    )
     closure(defn, platform)
-    output(foreach_platform_specific_value(defn, platform, "_condition", "condition", lambda cond: "endif " + cond + "\n"))
+    output(
+        foreach_platform_specific_value(
+            defn,
+            platform,
+            "_condition",
+            "condition",
+            lambda cond: f"endif {cond}" + "\n",
+        )
+    )
 
 def platform_specific_values(defn, platform, suffix, nonetag):
-    return foreach_platform_specific_value(defn, platform, suffix, nonetag,
-                                           lambda value: value + " ")
+    return foreach_platform_specific_value(
+        defn, platform, suffix, nonetag, lambda value: f"{value} "
+    )
 
 def platform_values(defn, platform, suffix):
-    return foreach_platform_value(defn, platform, suffix, lambda value: value + " ")
+    return foreach_platform_value(
+        defn, platform, suffix, lambda value: f"{value} "
+    )
 
 def extra_dist(defn):
-    return foreach_value(defn, "extra_dist", lambda value: value + " ")
+    return foreach_value(defn, "extra_dist", lambda value: f"{value} ")
 
 def platform_sources(defn, p): return platform_values(defn, p, "")
 def platform_nodist_sources(defn, p): return platform_values(defn, p, "_nodist")
@@ -659,9 +660,7 @@ def platform_objcopyflags(defn, p): return platform_specific_values(defn, p, "_o
 seen_target = set()
 
 def first_time(defn, snippet):
-    if defn['name'] not in seen_target:
-        return snippet
-    return ''
+    return snippet if defn['name'] not in seen_target else ''
 
 def is_platform_independent(defn):
     if 'enable' in defn:
@@ -675,9 +674,13 @@ def is_platform_independent(defn):
                 return False
 
     for suffix in [ "startup", "ldadd", "dependencies", "cflags", "ldflags", "cppflags", "ccasflags", "stripflags", "objcopyflags", "condition" ]:
-        template = platform_specific_values(defn, GRUB_PLATFORMS[0], "_" + suffix, suffix)
+        template = platform_specific_values(
+            defn, GRUB_PLATFORMS[0], f"_{suffix}", suffix
+        )
         for platform in GRUB_PLATFORMS[1:]:
-            if template != platform_specific_values(defn, platform, "_" + suffix, suffix):
+            if template != platform_specific_values(
+                defn, platform, f"_{suffix}", suffix
+            ):
                 return False
     for tag in [ "nostrip" ]:
         template = platform_tagged(defn, GRUB_PLATFORMS[0], tag)
@@ -691,25 +694,46 @@ def module(defn, platform):
     name = defn['name']
     set_canonical_name_suffix(".module")
 
-    gvar_add("platform_PROGRAMS", name + ".module")
-    gvar_add("MODULE_FILES", name + ".module$(EXEEXT)")
+    gvar_add("platform_PROGRAMS", f"{name}.module")
+    gvar_add("MODULE_FILES", f"{name}.module$(EXEEXT)")
 
-    var_set(cname(defn) + "_SOURCES", platform_sources(defn, platform) + " ## platform sources")
-    var_set("nodist_" + cname(defn) + "_SOURCES", platform_nodist_sources(defn, platform) + " ## platform nodist sources")
-    var_set(cname(defn) + "_LDADD", platform_ldadd(defn, platform))
-    var_set(cname(defn) + "_CFLAGS", "$(CFLAGS_MODULE) " + platform_cflags(defn, platform))
-    var_set(cname(defn) + "_LDFLAGS", "$(LDFLAGS_MODULE) " + platform_ldflags(defn, platform))
-    var_set(cname(defn) + "_CPPFLAGS", "$(CPPFLAGS_MODULE) " + platform_cppflags(defn, platform))
-    var_set(cname(defn) + "_CCASFLAGS", "$(CCASFLAGS_MODULE) " + platform_ccasflags(defn, platform))
-    var_set(cname(defn) + "_DEPENDENCIES", "$(TARGET_OBJ2ELF) " + platform_dependencies(defn, platform))
+    var_set(
+        f"{cname(defn)}_SOURCES",
+        f"{platform_sources(defn, platform)} ## platform sources",
+    )
+    var_set(
+        f"nodist_{cname(defn)}_SOURCES",
+        f"{platform_nodist_sources(defn, platform)} ## platform nodist sources",
+    )
+    var_set(f"{cname(defn)}_LDADD", platform_ldadd(defn, platform))
+    var_set(
+        f"{cname(defn)}_CFLAGS",
+        f"$(CFLAGS_MODULE) {platform_cflags(defn, platform)}",
+    )
+    var_set(
+        f"{cname(defn)}_LDFLAGS",
+        f"$(LDFLAGS_MODULE) {platform_ldflags(defn, platform)}",
+    )
+    var_set(
+        f"{cname(defn)}_CPPFLAGS",
+        f"$(CPPFLAGS_MODULE) {platform_cppflags(defn, platform)}",
+    )
+    var_set(
+        f"{cname(defn)}_CCASFLAGS",
+        f"$(CCASFLAGS_MODULE) {platform_ccasflags(defn, platform)}",
+    )
+    var_set(
+        f"{cname(defn)}_DEPENDENCIES",
+        f"$(TARGET_OBJ2ELF) {platform_dependencies(defn, platform)}",
+    )
 
     gvar_add("dist_noinst_DATA", extra_dist(defn))
-    gvar_add("BUILT_SOURCES", "$(nodist_" + cname(defn) + "_SOURCES)")
-    gvar_add("CLEANFILES", "$(nodist_" + cname(defn) + "_SOURCES)")
+    gvar_add("BUILT_SOURCES", f"$(nodist_{cname(defn)}_SOURCES)")
+    gvar_add("CLEANFILES", f"$(nodist_{cname(defn)}_SOURCES)")
 
-    gvar_add("MOD_FILES", name + ".mod")
-    gvar_add("MARKER_FILES", name + ".marker")
-    gvar_add("CLEANFILES", name + ".marker")
+    gvar_add("MOD_FILES", f"{name}.mod")
+    gvar_add("MARKER_FILES", f"{name}.marker")
+    gvar_add("CLEANFILES", f"{name}.marker")
     output("""
 """ + name + """.marker: $(""" + cname(defn) + """_SOURCES) $(nodist_""" + cname(defn) + """_SOURCES)
 	$(TARGET_CPP) -DGRUB_LST_GENERATOR $(CPPFLAGS_MARKER) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(""" + cname(defn) + """_CPPFLAGS) $(CPPFLAGS) $^ > $@.new || (rm -f $@; exit 1)
@@ -719,95 +743,187 @@ def module(defn, platform):
 def kernel(defn, platform):
     name = defn['name']
     set_canonical_name_suffix(".exec")
-    gvar_add("platform_PROGRAMS", name + ".exec")
-    var_set(cname(defn) + "_SOURCES", platform_startup(defn, platform))
-    var_add(cname(defn) + "_SOURCES", platform_sources(defn, platform))
-    var_set("nodist_" + cname(defn) + "_SOURCES", platform_nodist_sources(defn, platform) + " ## platform nodist sources")
-    var_set(cname(defn) + "_LDADD", platform_ldadd(defn, platform))
-    var_set(cname(defn) + "_CFLAGS", "$(AM_CFLAGS) $(CFLAGS_KERNEL) " + platform_cflags(defn, platform))
-    var_set(cname(defn) + "_LDFLAGS", "$(AM_LDFLAGS) $(LDFLAGS_KERNEL) " + platform_ldflags(defn, platform))
-    var_set(cname(defn) + "_CPPFLAGS", "$(AM_CPPFLAGS) $(CPPFLAGS_KERNEL) " + platform_cppflags(defn, platform))
-    var_set(cname(defn) + "_CCASFLAGS", "$(AM_CCASFLAGS) $(CCASFLAGS_KERNEL) " + platform_ccasflags(defn, platform))
-    var_set(cname(defn) + "_STRIPFLAGS", "$(AM_STRIPFLAGS) $(STRIPFLAGS_KERNEL) " + platform_stripflags(defn, platform))
-    var_set(cname(defn) + "_DEPENDENCIES", "$(TARGET_OBJ2ELF)")
+    gvar_add("platform_PROGRAMS", f"{name}.exec")
+    var_set(f"{cname(defn)}_SOURCES", platform_startup(defn, platform))
+    var_add(f"{cname(defn)}_SOURCES", platform_sources(defn, platform))
+    var_set(
+        f"nodist_{cname(defn)}_SOURCES",
+        f"{platform_nodist_sources(defn, platform)} ## platform nodist sources",
+    )
+    var_set(f"{cname(defn)}_LDADD", platform_ldadd(defn, platform))
+    var_set(
+        f"{cname(defn)}_CFLAGS",
+        f"$(AM_CFLAGS) $(CFLAGS_KERNEL) {platform_cflags(defn, platform)}",
+    )
+    var_set(
+        f"{cname(defn)}_LDFLAGS",
+        f"$(AM_LDFLAGS) $(LDFLAGS_KERNEL) {platform_ldflags(defn, platform)}",
+    )
+    var_set(
+        f"{cname(defn)}_CPPFLAGS",
+        f"$(AM_CPPFLAGS) $(CPPFLAGS_KERNEL) {platform_cppflags(defn, platform)}",
+    )
+    var_set(
+        f"{cname(defn)}_CCASFLAGS",
+        f"$(AM_CCASFLAGS) $(CCASFLAGS_KERNEL) {platform_ccasflags(defn, platform)}",
+    )
+    var_set(
+        f"{cname(defn)}_STRIPFLAGS",
+        f"$(AM_STRIPFLAGS) $(STRIPFLAGS_KERNEL) {platform_stripflags(defn, platform)}",
+    )
+    var_set(f"{cname(defn)}_DEPENDENCIES", "$(TARGET_OBJ2ELF)")
 
     gvar_add("dist_noinst_DATA", extra_dist(defn))
-    gvar_add("BUILT_SOURCES", "$(nodist_" + cname(defn) + "_SOURCES)")
-    gvar_add("CLEANFILES", "$(nodist_" + cname(defn) + "_SOURCES)")
+    gvar_add("BUILT_SOURCES", f"$(nodist_{cname(defn)}_SOURCES)")
+    gvar_add("CLEANFILES", f"$(nodist_{cname(defn)}_SOURCES)")
 
-    gvar_add("platform_DATA", name + ".img")
-    gvar_add("CLEANFILES", name + ".img")
-    rule(name + ".img", name + ".exec$(EXEEXT)",
-         if_platform_tagged(defn, platform, "nostrip",
-"""if test x$(TARGET_APPLE_LINKER) = x1; then \
+    gvar_add("platform_DATA", f"{name}.img")
+    gvar_add("CLEANFILES", f"{name}.img")
+    rule(
+        f"{name}.img",
+        f"{name}.exec$(EXEEXT)",
+        if_platform_tagged(
+            defn,
+            platform,
+            "nostrip",
+            """if test x$(TARGET_APPLE_LINKER) = x1; then \
      $(TARGET_OBJCONV) -f$(TARGET_MODULE_FORMAT) -nr:_grub_mod_init:grub_mod_init -nr:_grub_mod_fini:grub_mod_fini -ed2022 -wd1106 -nu -nd $< $@; \
    elif test ! -z '$(TARGET_OBJ2ELF)'; then \
      $(TARGET_OBJ2ELF) $< $@ || (rm -f $@; exit 1); \
    else cp $< $@; fi""",
-"""if test x$(TARGET_APPLE_LINKER) = x1; then \
-  $(TARGET_STRIP) -S -x $(""" + cname(defn) + """) -o $@.bin $<; \
+            """if test x$(TARGET_APPLE_LINKER) = x1; then \
+  $(TARGET_STRIP) -S -x $("""
+            + cname(defn)
+            + """) -o $@.bin $<; \
+  $(TARGET_STRIP) -S -x $("""
+            + cname(defn)
+            + """) -o $@.bin $<; \
   $(TARGET_OBJCONV) -f$(TARGET_MODULE_FORMAT) -nr:_grub_mod_init:grub_mod_init -nr:_grub_mod_fini:grub_mod_fini -ed2022 -ed2016 -wd1106 -nu -nd $@.bin $@; \
   rm -f $@.bin; \
    elif test ! -z '$(TARGET_OBJ2ELF)'; then \
-     """  + "$(TARGET_STRIP) $(" + cname(defn) + "_STRIPFLAGS) -o $@.bin $< && \
+     """
+            + "$(TARGET_STRIP) $("
+            + cname(defn)
+            + "_STRIPFLAGS) -o $@.bin $< && \
+     "
+            ""
+            + "$(TARGET_STRIP) $("
+            + cname(defn)
+            + "_STRIPFLAGS) -o $@.bin $< && \
      $(TARGET_OBJ2ELF) $@.bin $@ || (rm -f $@; rm -f $@.bin; exit 1); \
      rm -f $@.bin; \
-else """  + "$(TARGET_STRIP) $(" + cname(defn) + "_STRIPFLAGS) -o $@ $<; \
-fi"""))
+else "
+            ""
+            + "$(TARGET_STRIP) $("
+            + cname(defn)
+            + "_STRIPFLAGS) -o $@ $<; \
+else "
+            ""
+            + "$(TARGET_STRIP) $("
+            + cname(defn)
+            + "_STRIPFLAGS) -o $@ $<; \
+fi"
+            "",
+        ),
+    )
 
 def image(defn, platform):
     name = defn['name']
     set_canonical_name_suffix(".image")
-    gvar_add("platform_PROGRAMS", name + ".image")
-    var_set(cname(defn) + "_SOURCES", platform_sources(defn, platform))
-    var_set("nodist_" + cname(defn) + "_SOURCES", platform_nodist_sources(defn, platform) + "## platform nodist sources")
-    var_set(cname(defn) + "_LDADD", platform_ldadd(defn, platform))
-    var_set(cname(defn) + "_CFLAGS", "$(AM_CFLAGS) $(CFLAGS_IMAGE) " + platform_cflags(defn, platform))
-    var_set(cname(defn) + "_LDFLAGS", "$(AM_LDFLAGS) $(LDFLAGS_IMAGE) " + platform_ldflags(defn, platform))
-    var_set(cname(defn) + "_CPPFLAGS", "$(AM_CPPFLAGS) $(CPPFLAGS_IMAGE) " + platform_cppflags(defn, platform))
-    var_set(cname(defn) + "_CCASFLAGS", "$(AM_CCASFLAGS) $(CCASFLAGS_IMAGE) " + platform_ccasflags(defn, platform))
-    var_set(cname(defn) + "_OBJCOPYFLAGS", "$(OBJCOPYFLAGS_IMAGE) " + platform_objcopyflags(defn, platform))
+    gvar_add("platform_PROGRAMS", f"{name}.image")
+    var_set(f"{cname(defn)}_SOURCES", platform_sources(defn, platform))
+    var_set(
+        f"nodist_{cname(defn)}_SOURCES",
+        f"{platform_nodist_sources(defn, platform)}## platform nodist sources",
+    )
+    var_set(f"{cname(defn)}_LDADD", platform_ldadd(defn, platform))
+    var_set(
+        f"{cname(defn)}_CFLAGS",
+        f"$(AM_CFLAGS) $(CFLAGS_IMAGE) {platform_cflags(defn, platform)}",
+    )
+    var_set(
+        f"{cname(defn)}_LDFLAGS",
+        f"$(AM_LDFLAGS) $(LDFLAGS_IMAGE) {platform_ldflags(defn, platform)}",
+    )
+    var_set(
+        f"{cname(defn)}_CPPFLAGS",
+        f"$(AM_CPPFLAGS) $(CPPFLAGS_IMAGE) {platform_cppflags(defn, platform)}",
+    )
+    var_set(
+        f"{cname(defn)}_CCASFLAGS",
+        f"$(AM_CCASFLAGS) $(CCASFLAGS_IMAGE) {platform_ccasflags(defn, platform)}",
+    )
+    var_set(
+        f"{cname(defn)}_OBJCOPYFLAGS",
+        f"$(OBJCOPYFLAGS_IMAGE) {platform_objcopyflags(defn, platform)}",
+    )
     # var_set(cname(defn) + "_DEPENDENCIES", platform_dependencies(defn, platform) + " " + platform_ldadd(defn, platform))
 
     gvar_add("dist_noinst_DATA", extra_dist(defn))
-    gvar_add("BUILT_SOURCES", "$(nodist_" + cname(defn) + "_SOURCES)")
-    gvar_add("CLEANFILES", "$(nodist_" + cname(defn) + "_SOURCES)")
+    gvar_add("BUILT_SOURCES", f"$(nodist_{cname(defn)}_SOURCES)")
+    gvar_add("CLEANFILES", f"$(nodist_{cname(defn)}_SOURCES)")
 
-    gvar_add("platform_DATA", name + ".img")
-    gvar_add("CLEANFILES", name + ".img")
-    rule(name + ".img", name + ".image$(EXEEXT)", """
+    gvar_add("platform_DATA", f"{name}.img")
+    gvar_add("CLEANFILES", f"{name}.img")
+    rule(
+        f"{name}.img",
+        f"{name}.image$(EXEEXT)",
+        """
 if test x$(TARGET_APPLE_LINKER) = x1; then \
   $(MACHO2IMG) $< $@; \
 else \
-  $(TARGET_OBJCOPY) $(""" + cname(defn) + """_OBJCOPYFLAGS) --strip-unneeded -R .note -R .comment -R .note.gnu.build-id -R .MIPS.abiflags -R .reginfo -R .rel.dyn -R .note.gnu.gold-version -R .note.gnu.property -R .ARM.exidx $< $@; \
+  $(TARGET_OBJCOPY) $("""
+        + cname(defn)
+        + """_OBJCOPYFLAGS) --strip-unneeded -R .note -R .comment -R .note.gnu.build-id -R .MIPS.abiflags -R .reginfo -R .rel.dyn -R .note.gnu.gold-version -R .note.gnu.property -R .ARM.exidx $< $@; \
+  $(TARGET_OBJCOPY) $("""
+        + cname(defn)
+        + """_OBJCOPYFLAGS) --strip-unneeded -R .note -R .comment -R .note.gnu.build-id -R .MIPS.abiflags -R .reginfo -R .rel.dyn -R .note.gnu.gold-version -R .note.gnu.property -R .ARM.exidx $< $@; \
 fi
-""")
+""",
+    )
 
 def library(defn, platform):
     name = defn['name']
     set_canonical_name_suffix("")
 
-    vars_init(defn,
-              cname(defn) + "_SOURCES",
-              "nodist_" + cname(defn) + "_SOURCES",
-              cname(defn) + "_CFLAGS",
-              cname(defn) + "_CPPFLAGS",
-              cname(defn) + "_CCASFLAGS")
+    vars_init(
+        defn,
+        f"{cname(defn)}_SOURCES",
+        f"nodist_{cname(defn)}_SOURCES",
+        f"{cname(defn)}_CFLAGS",
+        f"{cname(defn)}_CPPFLAGS",
+        f"{cname(defn)}_CCASFLAGS",
+    )
     #         cname(defn) + "_DEPENDENCIES")
 
     if name not in seen_target:
         gvar_add("noinst_LIBRARIES", name)
-    var_add(cname(defn) + "_SOURCES", platform_sources(defn, platform))
-    var_add("nodist_" + cname(defn) + "_SOURCES", platform_nodist_sources(defn, platform))
-    var_add(cname(defn) + "_CFLAGS", first_time(defn, "$(AM_CFLAGS) $(CFLAGS_LIBRARY) ") + platform_cflags(defn, platform))
-    var_add(cname(defn) + "_CPPFLAGS", first_time(defn, "$(AM_CPPFLAGS) $(CPPFLAGS_LIBRARY) ") + platform_cppflags(defn, platform))
-    var_add(cname(defn) + "_CCASFLAGS", first_time(defn, "$(AM_CCASFLAGS) $(CCASFLAGS_LIBRARY) ") + platform_ccasflags(defn, platform))
+    var_add(f"{cname(defn)}_SOURCES", platform_sources(defn, platform))
+    var_add(
+        f"nodist_{cname(defn)}_SOURCES",
+        platform_nodist_sources(defn, platform),
+    )
+    var_add(
+        f"{cname(defn)}_CFLAGS",
+        first_time(defn, "$(AM_CFLAGS) $(CFLAGS_LIBRARY) ")
+        + platform_cflags(defn, platform),
+    )
+    var_add(
+        f"{cname(defn)}_CPPFLAGS",
+        first_time(defn, "$(AM_CPPFLAGS) $(CPPFLAGS_LIBRARY) ")
+        + platform_cppflags(defn, platform),
+    )
+    var_add(
+        f"{cname(defn)}_CCASFLAGS",
+        first_time(defn, "$(AM_CCASFLAGS) $(CCASFLAGS_LIBRARY) ")
+        + platform_ccasflags(defn, platform),
+    )
     # var_add(cname(defn) + "_DEPENDENCIES", platform_dependencies(defn, platform) + " " + platform_ldadd(defn, platform))
 
     gvar_add("dist_noinst_DATA", extra_dist(defn))
     if name not in seen_target:
-        gvar_add("BUILT_SOURCES", "$(nodist_" + cname(defn) + "_SOURCES)")
-        gvar_add("CLEANFILES", "$(nodist_" + cname(defn) + "_SOURCES)")
+        gvar_add("BUILT_SOURCES", f"$(nodist_{cname(defn)}_SOURCES)")
+        gvar_add("CLEANFILES", f"$(nodist_{cname(defn)}_SOURCES)")
 
 def installdir(defn, default="bin"):
     return defn.get('installdir', default)
@@ -817,12 +933,24 @@ def manpage(defn, adddeps):
     mansection = defn['mansection']
 
     output("if COND_MAN_PAGES\n")
-    gvar_add("man_MANS", name + "." + mansection)
-    rule(name + "." + mansection, name + " " + adddeps, """
-chmod a+x """ + name + """
-PATH=$(builddir):$$PATH pkgdatadir=$(builddir) $(HELP2MAN) --section=""" + mansection + """ -i $(top_srcdir)/docs/man/""" + name + """.h2m -o $@ """ + name + """
-""")
-    gvar_add("CLEANFILES", name + "." + mansection)
+    gvar_add("man_MANS", f"{name}.{mansection}")
+    rule(
+        f"{name}.{mansection}",
+        f"{name} {adddeps}",
+        """
+chmod a+x """
+        + name
+        + """
+PATH=$(builddir):$$PATH pkgdatadir=$(builddir) $(HELP2MAN) --section="""
+        + mansection
+        + """ -i $(top_srcdir)/docs/man/"""
+        + name
+        + """.h2m -o $@ """
+        + name
+        + """
+""",
+    )
+    gvar_add("CLEANFILES", f"{name}.{mansection}")
     output("endif\n")
 
 def program(defn, platform, test=False):
@@ -833,36 +961,59 @@ def program(defn, platform, test=False):
         gvar_add("check_PROGRAMS", name)
         gvar_add("TESTS", name)
     else:
-        var_add(installdir(defn) + "_PROGRAMS", name)
+        var_add(f"{installdir(defn)}_PROGRAMS", name)
         if 'mansection' in defn:
             manpage(defn, "")
 
-    var_set(cname(defn) + "_SOURCES", platform_sources(defn, platform))
-    var_set("nodist_" + cname(defn) + "_SOURCES", platform_nodist_sources(defn, platform))
-    var_set(cname(defn) + "_LDADD", platform_ldadd(defn, platform))
-    var_set(cname(defn) + "_CFLAGS", "$(AM_CFLAGS) $(CFLAGS_PROGRAM) " + platform_cflags(defn, platform))
-    var_set(cname(defn) + "_LDFLAGS", "$(AM_LDFLAGS) $(LDFLAGS_PROGRAM) " + platform_ldflags(defn, platform))
-    var_set(cname(defn) + "_CPPFLAGS", "$(AM_CPPFLAGS) $(CPPFLAGS_PROGRAM) " + platform_cppflags(defn, platform))
-    var_set(cname(defn) + "_CCASFLAGS", "$(AM_CCASFLAGS) $(CCASFLAGS_PROGRAM) " + platform_ccasflags(defn, platform))
+    var_set(f"{cname(defn)}_SOURCES", platform_sources(defn, platform))
+    var_set(
+        f"nodist_{cname(defn)}_SOURCES",
+        platform_nodist_sources(defn, platform),
+    )
+    var_set(f"{cname(defn)}_LDADD", platform_ldadd(defn, platform))
+    var_set(
+        f"{cname(defn)}_CFLAGS",
+        f"$(AM_CFLAGS) $(CFLAGS_PROGRAM) {platform_cflags(defn, platform)}",
+    )
+    var_set(
+        f"{cname(defn)}_LDFLAGS",
+        f"$(AM_LDFLAGS) $(LDFLAGS_PROGRAM) {platform_ldflags(defn, platform)}",
+    )
+    var_set(
+        f"{cname(defn)}_CPPFLAGS",
+        f"$(AM_CPPFLAGS) $(CPPFLAGS_PROGRAM) {platform_cppflags(defn, platform)}",
+    )
+    var_set(
+        f"{cname(defn)}_CCASFLAGS",
+        f"$(AM_CCASFLAGS) $(CCASFLAGS_PROGRAM) {platform_ccasflags(defn, platform)}",
+    )
     # var_set(cname(defn) + "_DEPENDENCIES", platform_dependencies(defn, platform) + " " + platform_ldadd(defn, platform))
 
     gvar_add("dist_noinst_DATA", extra_dist(defn))
-    gvar_add("BUILT_SOURCES", "$(nodist_" + cname(defn) + "_SOURCES)")
-    gvar_add("CLEANFILES", "$(nodist_" + cname(defn) + "_SOURCES)")
+    gvar_add("BUILT_SOURCES", f"$(nodist_{cname(defn)}_SOURCES)")
+    gvar_add("CLEANFILES", f"$(nodist_{cname(defn)}_SOURCES)")
 
 def data(defn, platform):
-    var_add("dist_" + installdir(defn) + "_DATA", platform_sources(defn, platform))
+    var_add(f"dist_{installdir(defn)}_DATA", platform_sources(defn, platform))
     gvar_add("dist_noinst_DATA", extra_dist(defn))
 
 def transform_data(defn, platform):
     name = defn['name']
 
-    var_add(installdir(defn) + "_DATA", name)
+    var_add(f"{installdir(defn)}_DATA", name)
 
-    rule(name, "$(top_builddir)/config.status " + platform_sources(defn, platform) + platform_dependencies(defn, platform), """
-(for x in """ + platform_sources(defn, platform) + """; do cat $(srcdir)/"$$x"; done) | $(top_builddir)/config.status --file=$@:-
-chmod a+x """ + name + """
-""")
+    rule(
+        name,
+        f"$(top_builddir)/config.status {platform_sources(defn, platform)}{platform_dependencies(defn, platform)}",
+        """
+(for x in """
+        + platform_sources(defn, platform)
+        + """; do cat $(srcdir)/"$$x"; done) | $(top_builddir)/config.status --file=$@:-
+chmod a+x """
+        + name
+        + """
+""",
+    )
 
     gvar_add("CLEANFILES", name)
     gvar_add("EXTRA_DIST", extra_dist(defn))
@@ -875,14 +1026,22 @@ def script(defn, platform):
         gvar_add("check_SCRIPTS", name)
         gvar_add ("TESTS", name)
     else:
-        var_add(installdir(defn) + "_SCRIPTS", name)
+        var_add(f"{installdir(defn)}_SCRIPTS", name)
         if 'mansection' in defn:
             manpage(defn, "grub-mkconfig_lib")
 
-    rule(name, "$(top_builddir)/config.status " + platform_sources(defn, platform) + platform_dependencies(defn, platform), """
-(for x in """ + platform_sources(defn, platform) + """; do cat $(srcdir)/"$$x"; done) | $(top_builddir)/config.status --file=$@:-
-chmod a+x """ + name + """
-""")
+    rule(
+        name,
+        f"$(top_builddir)/config.status {platform_sources(defn, platform)}{platform_dependencies(defn, platform)}",
+        """
+(for x in """
+        + platform_sources(defn, platform)
+        + """; do cat $(srcdir)/"$$x"; done) | $(top_builddir)/config.status --file=$@:-
+chmod a+x """
+        + name
+        + """
+""",
+    )
 
     gvar_add("CLEANFILES", name)
     gvar_add("EXTRA_DIST", extra_dist(defn))
